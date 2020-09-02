@@ -1,0 +1,97 @@
+vars:
+  user: "{{ ansible_user }}"
+  proj_app: mezzanine_example
+  proj_name: "{{ proj_app }}"
+  venv_home: "{{ ansible_env.HOME }}/.virtualenvs"
+  venv_path: "{{ venv_home }}/{{ proj_name }}"
+  proj_path: "{{ ansible_env.HOME }}/mezzanine/{{ proj_name }}"
+  settings_path: "{{ proj_path }}/{{ proj_name }}"
+  reqs_path: requirements.txt
+  manage: "{{ python }} {{ proj_path }}/manage.py"
+  live_hostname: 192.168.33.10.xip.io
+  domains:
+    - 192.168.33.10.xip.io
+    - www.192.168.33.10.xip.io
+  repo_url: git@github.com:anisblebook/mezzanine_example.git
+  locale: en_US.UTF-8
+  conf_path: /etc/nginx/conf
+  tls_enable: True
+  python: "{{ venv_path }}/bin/python"
+  database_name: "{{ proj_name }}"
+  database_user: "{{ proj_name }}"
+  database_host: localhost
+  databse_port: 5432
+  gunicorn_procname: gunicorn_mezzanine
+  num_workers: "multiprocessing.cpu_count() * 2 + 1"
+vars_files:
+  - secrets.yml
+
+- name: install apt packages
+  apt: pkg={{ item }} update_cache=yes cache_valid_time=3600
+  become: True
+  with_items:
+    - git
+    - libjpeg-dev
+    - libpq-dev
+    - memcached
+    - nginx
+    - postgresql
+    - python-dev
+    - python-pip
+    - python-psycopg2
+    - python-setuptools
+    - python-virtualenv
+    - supervisor
+
+- name: check out the repository on the database_host
+  git: repo={{ repo_url }} dest={{ proj_path }} accept_hostkey=yes
+
+- name: install requirements.txt
+  pip: requirements={{ proj_path }}/{{ reqs_path }} virtualenv={{ venv_path }}
+
+- name: install required python packages
+  pip: name={{ item }} virtualenv={{ venv_path }}
+  with_items:
+    - gunicorn
+    - setproctitle
+    - psycopg2
+    - django_compressor
+    - python-memcached
+
+- name: create project locale
+  locale_gen: name={{ locale }}
+  become: True
+
+- name: create a DB user
+  postgresql_user:
+    name: "{{ database_user}}"
+    password: "{{ db_pass }}"
+  become: True
+  become_user: postgres
+
+- name: create the database
+  postgresql_db:
+    name: "{{ database_name }}"
+    owner: "{{ database_user }}"
+    encoding: UTF8
+    lc_ctype: "{{ locale }}"
+    lc_collate: "{{ locale }}"
+    template: template0
+  become: True
+  become_user: postgres
+
+- name: set the site id
+  script: scripts/setsite.py
+  environment: 
+    PATH: "{{ venv_path }}/bin"
+    PROJECT_DIR: "{{ proj_path }}"
+    PROJECT_APP: "{{ proj_app }}"
+    WEBSITE_DOMAIN: "{{ live_hostname }}"
+
+- name: set the admin password
+  script: scripts/setadmin.py
+  environment: 
+    PATH: "{{ venv_path }}/bin"
+    PROJECT_DIR: "{{ proj_path }}"
+    PROJECT_APP: "{{ proj_app }}"
+    WEBSITE_DOMAIN: "{{ live_hostname }}"
