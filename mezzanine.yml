@@ -1,3 +1,4 @@
+---
 - name: Deploy mezzanine
   hosts: web
 
@@ -28,7 +29,7 @@
     num_workers: "multiprocessing.cpu_count() * 2 + 1"
   vars_files:
     - secrets.yml
-tasks :
+- tasks :
   - name: install apt packages
     apt: pkg={{ item }} update_cache=yes cache_valid_time=3600
     become: True
@@ -86,7 +87,7 @@ tasks :
 
   - name: ensure config path exists
     file: path={{ conf_path }} state=directory
-    sudo: True
+    become: True
     when: tls_enabled
 
   - name: create tls certs
@@ -95,7 +96,7 @@ tasks :
       -keyout {{ proj_name }}.key -subj '/CN={{ domains[0] }}' -days 3650
       chdir={{ conf_path }}
       creates={{ conf_path }}/{{ proj_name }}.crt
-    sudo: True
+    become: True
     when: tls_enabled
     notify: restart nginx
 
@@ -117,7 +118,48 @@ tasks :
       dest: /etc/nginx/sites-enabled/mezzanine.conf
       state: link
     become: True
-    
+
+  - name: set the supervisor.conf.j2
+    template:
+      src=templates/supervisor.conf.j2
+      dest=/etc/supervisor/conf.d/mezzanine.conf
+    become: True
+    notify: restart supervisor
+
+  - name: install twitter poll cron job
+    cron: name="poll twitter" minute="*/5" user={{ user }} job="{{ manage }} poll_twitter"
+
+  - name: set the gunicorn file
+    template:
+      src=templates/gunicorn.conf.py.j2
+      dest={{ proj_path }}/gunicorn.conf.py  
+
+  - name: generate the settings file
+    template:
+      src=templates/local_settings.py.j2    
+      dest={{ proj_path }}/local_settings.py
+
+  - name: insall requirements.txt
+    pip: requirements={{ proj_path }}/{{ reqs_path }} virtualenv={{ venv_path }}
+
+  - name: install required python packages
+    pip: name={{ item }} virtualenv={{ venv_path }}
+    with_items:
+      - gunicorn
+      - setproctitle
+      - psycopg2
+      - django-compressor
+      - python-memcached
+
+  - name: apply migrations to creat ethe database, collect static content
+    django_manage:
+      command: "{{ item }}"
+      app_path: "{{ proj_path }}"
+      virtualenv: "{{ venv_path }}"   
+    with_items:
+      - migrate
+      - collectstatic
+
   - name: set the site id
     script: scripts/setsite.py
     environment: 
@@ -132,29 +174,13 @@ tasks :
       PATH: "{{ venv_path }}/bin"
       PROJECT_DIR: "{{ proj_path }}"
       PROJECT_APP: "{{ proj_app }}"
-      WEBSITE_DOMAIN: "{{ live_hostname }}"
+      ADMIN_PASSWORD: "{{ admin_pass }}"
 
-  - name: set the gunicorn file
-    template:
-      src: templates/gunicorn.conf.py.j2
-      dest: "{{ proj_path }}"/guincorn.conf.py
+  handlers:
+    - name: restart supervisor
+      supervisorctl: name=gunicorn_mezzanine state=restarted
+      become: True
 
-  - name: set the supervisor.conf.j2
-    template:
-      src: templates/supervisor.conf.j2
-    become: True
-    notify: restart supervisor
-
-
-
-handlers:
-  - name: restart supervisor
-  supervisorctl: name=gunicorn_mezzanine state=restarted
-  sudo: True
-
-  - name: restart nginx
-  service: name=nginx state=restarted
-  sudo: True
-
-
-
+    - name: restart nginx
+      service: name=nginx state=restarted
+      become: True
